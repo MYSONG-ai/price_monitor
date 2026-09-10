@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>电视竞品价格监控</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+:root{--bg:#f6f8fb;--card:#fff;--text:#172033;--muted:#667085;--line:#e6eaf0;--green:#059669;--red:#dc2626}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:Inter,"Segoe UI",Arial,sans-serif;color:var(--text)}
+.wrap{max-width:1500px;margin:auto;padding:24px}.header{display:flex;justify-content:space-between;align-items:end;margin-bottom:16px}
+.title{font-size:26px;font-weight:750}.subtitle{color:var(--muted);font-size:13px;margin-top:5px}
+.badge{background:#eaf1ff;color:#1d4ed8;padding:7px 11px;border-radius:9px;font-size:12px;font-weight:650}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 1px 3px #0f172a0a}
+.filters{padding:14px 16px;margin-bottom:14px}.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.label{font-size:12px;color:var(--muted);font-weight:650}select,.reset{border:1px solid #dbe0e8;background:#fff;border-radius:8px;padding:8px 10px;min-width:130px}
+.reset{cursor:pointer;min-width:auto}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}.kpi{padding:16px}
+.kpi .name{font-size:12px;color:var(--muted);font-weight:650}.kpi .value{font-size:28px;font-weight:760;margin-top:7px}.kpi .note{font-size:11px;color:var(--muted);margin-top:3px}.kpis{grid-template-columns:minmax(240px,320px)}
+.chart{padding:10px 12px;margin-bottom:14px}.chart-title{display:flex;justify-content:space-between;align-items:center;font-size:16px;font-weight:730;padding:8px 8px 0}.chart-note{font-size:11px;color:#6b7280;font-weight:500;margin-left:8px}.size-tabs{display:flex;gap:6px}.size-tab{border:1px solid #dbe0e8;background:#fff;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px;color:#475467}.size-tab.active{background:#111827;color:#fff;border-color:#111827}#priceChart{height:500px}
+.table-panel{padding:16px}.table-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.table-title{font-size:16px;font-weight:730}
+table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;padding:10px;border-bottom:1px solid #dfe4eb;color:#667085;background:#fafbfc}
+td{padding:10px;border-bottom:1px solid #eef1f5}.num{text-align:right;font-variant-numeric:tabular-nums}.missing{color:#98a2b3}.changed{color:var(--red);font-weight:800}
+.channel{font-weight:650}.channel.unieuro{color:#1d4ed8}.channel.mediaworld{color:#e30613}
+.empty{padding:35px;text-align:center;color:var(--muted)}
+@media(max-width:800px){.kpis{grid-template-columns:1fr 1fr}.wrap{padding:12px}table{font-size:12px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div><div class="title">电视竞品价格监控</div><div class="subtitle">Unieuro · MediaWorld｜按尺寸、品牌、型号和渠道查看价格</div></div>
+    <div class="badge">最新数据：2026-09-10</div>
+  </div>
+  <div class="panel filters">
+    <div class="row">
+      <span class="label">尺寸</span><select id="size"><option value="All">全部</option></select>
+      <span class="label">品牌</span><select id="brand"><option value="All">全部</option></select>
+      <span class="label">渠道</span><select id="channel"><option value="All">全部</option></select>
+      <button class="reset" id="reset">↺ 重置</button>
+    </div>
+  </div>
+  <div class="kpis">
+    <div class="panel kpi"><div class="name">最低价格</div><div class="value" id="kpiLowest">–</div><div class="note" id="kpiLowestNote">当前可用报价</div></div>
+  </div>
+  <div class="panel chart"><div class="chart-title"><span>价格趋势<span class="chart-note">按型号和渠道显示</span></span><span class="size-tabs"><button class="size-tab" data-chart-size="32">32 英寸</button><button class="size-tab active" data-chart-size="43">43 英寸</button><button class="size-tab" data-chart-size="65">65 英寸</button></span></div><div id="priceChart"></div></div>
+  <div class="panel table-panel">
+    <div class="table-head"><div class="table-title">价格明细</div><div class="subtitle">价格变化将标红并加粗</div></div>
+    <div id="table"></div>
+  </div>
+</div>
+<script>
+const DATA = [{"size":"43","brand":"HISENSE","model":"43A6Q","channel":"Unieuro","price":199.0,"date":"2026-09-10"},{"size":"43","brand":"HISENSE","model":"43A6Q","channel":"MediaWorld","price":269.0,"date":"2026-09-10"},{"size":"43","brand":"HISENSE","model":"43A6S","channel":"Unieuro","price":269.0,"date":"2026-09-10"},{"size":"43","brand":"HISENSE","model":"43A6S","channel":"MediaWorld","price":329.0,"date":"2026-09-10"},{"size":"43","brand":"HISENSE","model":"43A7Q","channel":"Unieuro","price":329.0,"date":"2026-09-10"},{"size":"43","brand":"HISENSE","model":"43E7Q","channel":"MediaWorld","price":259.0,"date":"2026-09-10"},{"size":"43","brand":"HISENSE","model":"43Q7S","channel":"Unieuro","price":299.9,"date":"2026-09-10"},{"size":"43","brand":"HISENSE","model":"43Q7S","channel":"MediaWorld","price":369.0,"date":"2026-09-10"},{"size":"43","brand":"TCL","model":"43T6C","channel":"Unieuro","price":null,"date":"2026-09-10"},{"size":"43","brand":"TCL","model":"43P6K","channel":"Unieuro","price":240.0,"date":"2026-09-10"},{"size":"43","brand":"TCL","model":"43P6K","channel":"MediaWorld","price":240.99,"date":"2026-09-10"},{"size":"43","brand":"TCL","model":"43T69C","channel":"Unieuro","price":296.0,"date":"2026-09-10"},{"size":"43","brand":"TCL","model":"43T69C","channel":"MediaWorld","price":349.0,"date":"2026-09-10"},{"size":"43","brand":"TCL","model":"43C655","channel":"Unieuro","price":249.9,"date":"2026-09-10"},{"size":"43","brand":"TCL","model":"43S5L","channel":"MediaWorld","price":137.9,"date":"2026-09-10"},{"size":"32","brand":"HISENSE","model":"32A5S","channel":"Unieuro","price":219.9,"date":"2026-09-10"},{"size":"32","brand":"HISENSE","model":"32A5S","channel":"MediaWorld","price":239.0,"date":"2026-09-10"},{"size":"32","brand":"HISENSE","model":"32S5Q","channel":"MediaWorld","price":224.49,"date":"2026-09-10"},{"size":"32","brand":"TCL","model":"32S4K","channel":"Unieuro","price":160.0,"date":"2026-09-10"},{"size":"32","brand":"TCL","model":"32S4K","channel":"MediaWorld","price":189.0,"date":"2026-09-10"},{"size":"32","brand":"TCL","model":"32S5K","channel":"Unieuro","price":199.0,"date":"2026-09-10"},{"size":"32","brand":"TCL","model":"32S5L","channel":"MediaWorld","price":239.0,"date":"2026-09-10"},{"size":"32","brand":"TCL","model":"32V4C","channel":"MediaWorld","price":295.62,"date":"2026-09-10"},{"size":"32","brand":"TCL","model":"32SF560","channel":"Unieuro","price":179.99,"date":"2026-09-10"},{"size":"65","brand":"HISENSE","model":"65Q7S","channel":"Unieuro","price":549.0,"date":"2026-09-10"},{"size":"65","brand":"HISENSE","model":"65Q7S","channel":"MediaWorld","price":549.0,"date":"2026-09-10"},{"size":"65","brand":"HISENSE","model":"65E7Q","channel":"Unieuro","price":399.0,"date":"2026-09-10"},{"size":"65","brand":"TCL","model":"65T6C","channel":"Unieuro","price":499.0,"date":"2026-09-10"},{"size":"65","brand":"TCL","model":"65T69C","channel":"Unieuro","price":501.0,"date":"2026-09-10"},{"size":"65","brand":"TCL","model":"65T69C","channel":"MediaWorld","price":629.0,"date":"2026-09-10"},{"size":"32","brand":"HISENSE","model":"32A4Q","channel":"Unieuro","price":139.0,"date":"2026-09-10"},{"size":"32","brand":"HISENSE","model":"32A4Q","channel":"MediaWorld","price":139.0,"date":"2026-09-10"},{"size":"32","brand":"HISENSE","model":"32A4N","channel":"Unieuro","price":129.99,"date":"2026-09-10"}];
+const $ = id => document.getElementById(id);
+let chartSize='43';
+let activeLegendGroup=null;
+const euro = v => typeof v === 'number' ? new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR'}).format(v) : '/';
+const uniq = a => [...new Set(a)].sort();
+function fillSelect(id, values){ const s=$(id); s.innerHTML='<option value="All">全部</option>'+uniq(values).map(v=>'<option>'+v+'</option>').join(''); }
+function filtered(){ return DATA.filter(r=>( $('size').value==='All'||r.size===$('size').value )&&( $('brand').value==='All'||r.brand===$('brand').value )&&( $('channel').value==='All'||r.channel===$('channel').value )); }
+function chartRows(rows){
+  return rows.filter(r=>r.size===chartSize && typeof r.price==='number');
+}
+function kpiRows(rows){
+  return chartRows(rows).filter(r=>!activeLegendGroup || (r.brand+' · '+r.channel)===activeLegendGroup);
+}
+function renderChart(rows){
+  rows=chartRows(rows);
+  const groups={};
+  rows.forEach(r=>{const key=r.brand+' · '+r.model+' · '+r.channel;(groups[key]??=[]).push(r)});
+  const traces=Object.entries(groups).map(([name,arr])=>{
+    const group=arr[0].brand+' · '+arr[0].channel;
+    return {name:arr[0].model,legendgroup:group,legendgrouptitle:{text:group},x:arr.map(r=>r.date),y:arr.map(r=>typeof r.price==='number'?r.price:null),type:'scatter',mode:'lines+markers',connectgaps:false,line:{width:2.2},marker:{size:7},hovertemplate:'<b>'+name+' · '+arr[0].channel+'</b><br>日期：%{x}<br>价格：%{y:.2f} €<extra></extra>'};
+  });
+  Plotly.react('priceChart',traces,{margin:{l:65,r:25,t:15,b:65},paper_bgcolor:'#fff',plot_bgcolor:'#fff',hovermode:'closest',hoverdistance:8,spikedistance:-1,legend:{orientation:'h',y:-.2,x:0,font:{size:11},groupclick:'togglegroup'},xaxis:{type:'date',gridcolor:'#edf0f4',linecolor:'#cfd5de',tickformat:'%m-%d',automargin:true},yaxis:{title:'价格 (€)',gridcolor:'#edf0f4',zeroline:false,tickprefix:'€'},font:{family:'Inter,Segoe UI,Arial,sans-serif',color:'#344054'}},{responsive:true,displaylogo:false});
+  const chart=document.getElementById('priceChart');
+  chart.removeAllListeners?.('plotly_legendclick');
+  chart.removeAllListeners?.('plotly_legenddoubleclick');
+  chart.on('plotly_legendclick',event=>{
+    const group=chart.data[event.curveNumber]?.legendgroup;
+    if(!group)return false;
+    activeLegendGroup=group;
+    Plotly.restyle(chart,{visible:chart.data.map(trace=>trace.legendgroup===group?true:'legendonly'),opacity:chart.data.map(()=>1)},chart.data.map((_,i)=>i));
+    updateKpis(filtered());
+    return false;
+  });
+  chart.on('plotly_legenddoubleclick',()=>{
+    activeLegendGroup=null;
+    Plotly.restyle(chart,{visible:chart.data.map(()=>true),opacity:chart.data.map(()=>1)},chart.data.map((_,i)=>i));
+    updateKpis(filtered());
+    return false;
+  });
+}
+function updateKpis(rows){
+  const available=kpiRows(rows);
+  const lowest=available.reduce((best,r)=>!best||r.price<best.price?r:best,null);
+  $('kpiLowest').textContent=lowest?euro(lowest.price):'–';
+  $('kpiLowestNote').textContent=lowest?lowest.channel+' · '+lowest.brand+' '+lowest.model:'当前没有可用报价';
+}
+function render(){
+  const rows=filtered();
+  renderChart(rows);
+  updateKpis(rows);
+  if(!rows.length){$('table').innerHTML='<div class="empty">没有匹配的数据</div>';return}
+  $('table').innerHTML='<table><thead><tr><th>尺寸</th><th>品牌</th><th>型号</th><th>渠道</th><th class="num">2026-09-10</th></tr></thead><tbody>'+rows.map(r=>{
+    const missing=r.price==='/';
+    const cls=missing?'missing':'';
+    const channelCls=r.channel.toLowerCase().replace('mediaworld','mediaworld').replace('unieuro','unieuro');
+    return '<tr><td>'+r.size+' 英寸</td><td><b>'+r.brand+'</b></td><td><b>'+r.model+'</b></td><td class="channel '+channelCls+'">'+r.channel+'</td><td class="num '+cls+'">'+(missing?'/':euro(r.price))+'</td></tr>';
+  }).join('')+'</tbody></table>';
+}
+fillSelect('size',DATA.map(r=>r.size));
+fillSelect('brand',DATA.map(r=>r.brand)); fillSelect('channel',DATA.map(r=>r.channel));
+['size','brand','channel'].forEach(id=>$(id).addEventListener('change',render));
+$('size').addEventListener('change',render);
+$('priceChart').closest('.chart').querySelectorAll('.size-tab').forEach(button=>button.addEventListener('click',()=>{
+  chartSize=button.dataset.chartSize;
+  activeLegendGroup=null;
+  $('priceChart').closest('.chart').querySelectorAll('.size-tab').forEach(b=>b.classList.toggle('active',b===button));
+  render();
+}));
+$('reset').addEventListener('click',()=>{['size','brand','channel'].forEach(id=>$(id).value='All');render()});
+render();
+</script>
+</body>
+</html>
