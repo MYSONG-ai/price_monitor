@@ -15,18 +15,7 @@ import requests
 from openpyxl import load_workbook
 
 ROOT = Path(__file__).resolve().parent
-INPUT = next(
-    (
-        path
-        for path in (
-            ROOT / "input.xlsx",
-            ROOT / "price_monitor_input_43_updated.xlsx",
-            ROOT / "price_monitor_input_43.xlsx",
-        )
-        if path.exists()
-    ),
-    ROOT / "input.xlsx",
-)
+INPUT = ROOT / "input.xlsx"
 DASHBOARD = ROOT / "price_monitor_dashboard.html"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
