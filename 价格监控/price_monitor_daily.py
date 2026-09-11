@@ -1,4 +1,5 @@
 import csv
+import html as html_lib
 import json
 import os
 import re
@@ -23,6 +24,16 @@ HEADERS = {
 FEISHU_BASE_URL = os.getenv("FEISHU_BASE_URL", "https://open.feishu.cn").rstrip("/")
 FEISHU_READ_RANGE = os.getenv("FEISHU_READ_RANGE", "A1:AZ200")
 DATE_HEADER_START_COL = "H"
+FINANCE_TERMS = (
+    "finanziamento",
+    "rate da",
+    "tasso zero",
+    "tan",
+    "taeg",
+    "importo totale",
+    "credito",
+    "monthlyrate",
+)
 
 
 def parse_price(raw):
@@ -34,7 +45,100 @@ def parse_price(raw):
     return round(value, 2) if 20 < value < 10000 else None
 
 
-def extract_price(html, retailer):
+def parse_json_price(raw):
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+        return round(value, 2) if 20 < value < 10000 else None
+    text = str(raw).strip()
+    match = re.search(r"\d{1,3}(?:\.\d{3})*,\d{2}", text)
+    if match:
+        return parse_price(match.group(0))
+    match = re.search(r"\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        value = float(match.group(0))
+    except ValueError:
+        return None
+    return round(value, 2) if 20 < value < 10000 else None
+
+
+def iter_json_values(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from iter_json_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_json_values(child)
+
+
+def extract_jsonld_price(html):
+    for match in re.finditer(
+        r"<script[^>]+type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
+        html,
+        flags=re.I | re.S,
+    ):
+        raw = html_lib.unescape(match.group(1)).strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for item in iter_json_values(payload):
+            offers = item.get("offers") if isinstance(item, dict) else None
+            if isinstance(offers, list):
+                offer_items = offers
+            elif isinstance(offers, dict):
+                offer_items = [offers]
+            else:
+                offer_items = []
+            for offer in offer_items:
+                price = parse_json_price(offer.get("price") or offer.get("lowPrice"))
+                if price is not None:
+                    return price, "json-ld"
+    return None, None
+
+
+def mediaworld_product_id(url):
+    if not url:
+        return None
+    match = re.search(r"-(\d+)\.html(?:[?#].*)?$", url)
+    return match.group(1) if match else None
+
+
+def extract_mediaworld_cofr_price(html, url):
+    product_id = mediaworld_product_id(url)
+    if not product_id:
+        return None, None
+    markers = (f'"id":"Media:it:{product_id}"', f'\\"id\\":\\"Media:it:{product_id}\\"')
+    for marker in markers:
+        start = 0
+        while True:
+            index = html.find(marker, start)
+            if index < 0:
+                break
+            segment = html[index:index + 8000]
+            match = re.search(
+                r'"price"\s*:\s*\{[\s\S]{0,600}?"amount"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+                segment,
+            )
+            if match:
+                price = parse_json_price(match.group(1))
+                if price is not None:
+                    return price, "mediaworld-cofr-price"
+            start = index + len(marker)
+    return None, None
+
+
+def is_unieuro_search_url(url):
+    return bool(url and "/online/products" in url and "?" in url and "q=" in url.lower())
+
+
+def extract_text_price(html, retailer):
     text = re.sub(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>|<[^>]+>", " ", html, flags=re.I)
     text = re.sub(r"\s+", " ", text.replace("&euro;", "€"))
     patterns = (
@@ -44,10 +148,35 @@ def extract_price(html, retailer):
     )
     for pattern in patterns:
         for match in re.finditer(pattern, text, re.I):
+            if retailer == "MediaWorld":
+                context = text[max(0, match.start() - 160):match.end() + 160].lower()
+                if any(term in context for term in FINANCE_TERMS):
+                    continue
             price = parse_price(match.group(1))
             if price is not None:
-                return price
-    return None
+                return price, "text"
+    return None, None
+
+
+def extract_price_detail(html, retailer, url=None):
+    if retailer == "Unieuro" and is_unieuro_search_url(url):
+        return None, "ignored-unieuro-search-page"
+
+    if retailer == "MediaWorld":
+        price, source = extract_mediaworld_cofr_price(html, url)
+        if price is not None:
+            return price, source
+
+    price, source = extract_jsonld_price(html)
+    if price is not None:
+        return price, source
+
+    return extract_text_price(html, retailer)
+
+
+def extract_price(html, retailer, url=None):
+    price, _source = extract_price_detail(html, retailer, url)
+    return price
 
 
 def split_item(item):
@@ -143,14 +272,27 @@ def fetch_price(url, retailer, attempts=3):
         try:
             request = Request(url, headers=HEADERS)
             with urlopen(request, timeout=30) as response:
-                price = extract_price(response.read().decode("utf-8", errors="ignore"), retailer)
+                price, source = extract_price_detail(response.read().decode("utf-8", errors="ignore"), retailer, url)
             if price is not None:
+                if os.getenv("PRICE_MONITOR_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
+                    print(f"{retailer} {url} -> {price} ({source})")
                 return price
-        except (HTTPError, URLError, TimeoutError):
-            pass
+            if os.getenv("PRICE_MONITOR_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
+                print(f"{retailer} {url} -> no price ({source or 'not-found'}), attempt {attempt}/{attempts}")
+        except (HTTPError, URLError, TimeoutError) as error:
+            if os.getenv("PRICE_MONITOR_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
+                print(f"{retailer} {url} -> fetch error {type(error).__name__}, attempt {attempt}/{attempts}")
         if attempt < attempts:
             time.sleep(2 * attempt)
     return None
+
+
+def env_truthy(name):
+    return os.getenv(name, "").lower() in {"1", "true", "yes", "on"}
+
+
+def feishu_writes_enabled():
+    return env_truthy("FEISHU_WRITE")
 
 
 def feishu_required_env():
@@ -291,6 +433,10 @@ def find_or_create_date_column(access_token, spreadsheet_token, sheet_id, header
 
 
 def update_feishu_sheet(current, today):
+    if not feishu_writes_enabled():
+        print("skipped Feishu update; set FEISHU_WRITE=true to enable")
+        return
+
     env, missing = feishu_required_env()
     if missing:
         print(f"skipped Feishu update; missing secrets: {', '.join(missing)}")
@@ -379,11 +525,32 @@ def main():
 
     with ThreadPoolExecutor(max_workers=12) as pool:
         current = list(pool.map(scrape, tasks))
+
+    missing = [index for index, row in enumerate(current) if row.get("price") is None]
+    if missing:
+        print(f"retrying {len(missing)} missing prices in sequential fallback")
+        for index in missing:
+            size, brand, model, channel, url = tasks[index]
+            retry_price = fetch_price(url, channel, attempts=3)
+            if retry_price is not None:
+                current[index] = {
+                    "size": size,
+                    "brand": brand,
+                    "model": model,
+                    "channel": channel,
+                    "price": retry_price,
+                    "date": today,
+                }
+
     keys = {(r["size"], r["brand"], r["model"], r["channel"]) for r in current}
     history = [r for r in history if (r.get("size"), r.get("brand"), r.get("model"), r.get("channel")) in valid_keys and ((r.get("size"), r.get("brand"), r.get("model"), r.get("channel")) not in keys or r.get("date") != today)]
     payload = json.dumps(history + current, ensure_ascii=False, separators=(",", ":"))
     html = re.sub(r"const DATA = .*?;\s*\nconst \$", f"const DATA = {payload};\nconst $", html, count=1, flags=re.S)
     html = re.sub(r"最新数据：[0-9]{4}-[0-9]{2}-[0-9]{2}", f"最新数据：{today}", html)
+    if env_truthy("PRICE_MONITOR_DRY_RUN"):
+        missing_count = sum(1 for row in current if row.get("price") is None)
+        print(f"dry run: fetched {len(current)} records for {today}; {missing_count} missing; skipped dashboard and Feishu writes")
+        return
     DASHBOARD.write_text(html, encoding="utf-8")
     print(f"updated {DASHBOARD} with {len(current)} records for {today}")
     update_feishu_sheet(current, today)
