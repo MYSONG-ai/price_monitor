@@ -15,7 +15,18 @@ import requests
 from openpyxl import load_workbook
 
 ROOT = Path(__file__).resolve().parent
-INPUT = ROOT / "price_monitor_input_43_updated.xlsx" if (ROOT / "price_monitor_input_43_updated.xlsx").exists() else ROOT / "price_monitor_input_43.xlsx"
+INPUT = next(
+    (
+        path
+        for path in (
+            ROOT / "input.xlsx",
+            ROOT / "price_monitor_input_43_updated.xlsx",
+            ROOT / "price_monitor_input_43.xlsx",
+        )
+        if path.exists()
+    ),
+    ROOT / "input.xlsx",
+)
 DASHBOARD = ROOT / "price_monitor_dashboard.html"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
@@ -187,6 +198,38 @@ def split_item(item):
     return match.group(2), match.group(1).upper(), f"{match.group(2)}{match.group(3)}"
 
 
+def derive_size(*values):
+    text = " ".join(str(value or "") for value in values)
+    match = re.search(r"(?<!\d)(32|43|50|55|65|75|85)(?=\D|$)", text)
+    return match.group(1) if match else ""
+
+
+def normalize_header(value):
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def find_column(headers, names=(), contains=(), required=True):
+    normalized_names = {normalize_header(name) for name in names}
+    normalized_contains = [normalize_header(term) for term in contains]
+    for index, header in enumerate(headers):
+        normalized = normalize_header(header)
+        if normalized in normalized_names:
+            return index
+        if any(term and term in normalized for term in normalized_contains):
+            return index
+    if required:
+        expected = ", ".join([*names, *contains])
+        raise RuntimeError(f"{INPUT.name} is missing required header: {expected}")
+    return None
+
+
+def row_value(row, index):
+    if index is None or index >= len(row):
+        return ""
+    value = row[index]
+    return str(value).strip() if value not in (None, "") else ""
+
+
 def normalize_key_part(value):
     return re.sub(r"\s+", "", str(value or "")).upper()
 
@@ -248,19 +291,53 @@ def parse_date_header(value, default_year):
 
 
 def load_products():
-    sheet = load_workbook(INPUT, data_only=True)["Input"]
-    headers = [str(value or "").strip().lower() for value in next(sheet.iter_rows(values_only=True))]
-    item_col = headers.index("item name")
-    ue_col = next(i for i, value in enumerate(headers) if "unieuro" in value)
-    mw_col = next(i for i, value in enumerate(headers) if "mediaworld" in value)
+    workbook = load_workbook(INPUT, data_only=True)
+    sheet = workbook["Input"] if "Input" in workbook.sheetnames else workbook.active
+    header_row = next(sheet.iter_rows(values_only=True))
+    headers = [str(value or "").strip() for value in header_row]
+    item_col = find_column(headers, names=("item name",), required=False)
+    brand_col = find_column(headers, names=("brand", "品牌"), required=False)
+    model_col = find_column(headers, names=("model", "型号"), required=False)
+    technology_col = find_column(headers, names=("technology", "tech", "技术", "清晰度", "列1"), required=False)
+    ue_col = find_column(headers, contains=("unieuro",))
+    mw_col = find_column(headers, contains=("mediaworld",))
+
+    if item_col is None and (brand_col is None or model_col is None):
+        raise RuntimeError(f"{INPUT.name} must include either Item Name or Brand/Model columns")
+
     products = []
-    for row in sheet.iter_rows(min_row=2, values_only=True):
-        if not row[item_col]:
+    for row_number, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+        unieuro_url = row_value(row, ue_col)
+        mediaworld_url = row_value(row, mw_col)
+        if item_col is not None:
+            item = row_value(row, item_col)
+            if not item:
+                continue
+            size, brand, model = split_item(item)
+            technology = row_value(row, technology_col)
+        else:
+            brand = row_value(row, brand_col).upper()
+            model = row_value(row, model_col)
+            technology = row_value(row, technology_col)
+            if not any((brand, model, technology, unieuro_url, mediaworld_url)):
+                continue
+            if not brand or not model:
+                print(f"skipped input row {row_number}; missing brand or model")
+                continue
+            size = derive_size(model, unieuro_url, mediaworld_url)
+            item = f"{brand} {model}"
+
+        if not unieuro_url and not mediaworld_url:
             continue
+
         products.append({
-            "item": str(row[item_col]),
-            "Unieuro": str(row[ue_col]) if row[ue_col] else None,
-            "MediaWorld": str(row[mw_col]) if row[mw_col] else None,
+            "item": item,
+            "size": size,
+            "brand": brand,
+            "model": model,
+            "technology": technology,
+            "Unieuro": unieuro_url or None,
+            "MediaWorld": mediaworld_url or None,
         })
     return products
 
@@ -512,16 +589,29 @@ def main():
     valid_keys = set()
     tasks = []
     for product in products:
-        size, brand, model = split_item(product["item"])
+        size = product.get("size")
+        brand = product.get("brand")
+        model = product.get("model")
+        technology = product.get("technology", "")
+        if not (size and brand and model):
+            size, brand, model = split_item(product["item"])
         for channel in ("Unieuro", "MediaWorld"):
             if not product[channel]:
                 continue
             valid_keys.add((size, brand, model, channel))
-            tasks.append((size, brand, model, channel, product[channel]))
+            tasks.append((size, brand, model, technology, channel, product[channel]))
 
     def scrape(task):
-        size, brand, model, channel, url = task
-        return {"size": size, "brand": brand, "model": model, "channel": channel, "price": fetch_price(url, channel), "date": today}
+        size, brand, model, technology, channel, url = task
+        return {
+            "size": size,
+            "brand": brand,
+            "model": model,
+            "technology": technology,
+            "channel": channel,
+            "price": fetch_price(url, channel),
+            "date": today,
+        }
 
     with ThreadPoolExecutor(max_workers=12) as pool:
         current = list(pool.map(scrape, tasks))
@@ -530,13 +620,14 @@ def main():
     if missing:
         print(f"retrying {len(missing)} missing prices in sequential fallback")
         for index in missing:
-            size, brand, model, channel, url = tasks[index]
+            size, brand, model, technology, channel, url = tasks[index]
             retry_price = fetch_price(url, channel, attempts=3)
             if retry_price is not None:
                 current[index] = {
                     "size": size,
                     "brand": brand,
                     "model": model,
+                    "technology": technology,
                     "channel": channel,
                     "price": retry_price,
                     "date": today,
