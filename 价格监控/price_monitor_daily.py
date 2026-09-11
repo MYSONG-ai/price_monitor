@@ -1,5 +1,8 @@
+import csv
 import json
+import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -7,6 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+import requests
 from openpyxl import load_workbook
 
 ROOT = Path(__file__).resolve().parent
@@ -16,6 +20,9 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
     "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
 }
+FEISHU_BASE_URL = os.getenv("FEISHU_BASE_URL", "https://open.feishu.cn").rstrip("/")
+FEISHU_READ_RANGE = os.getenv("FEISHU_READ_RANGE", "A1:AZ200")
+DATE_HEADER_START_COL = "H"
 
 
 def parse_price(raw):
@@ -51,6 +58,66 @@ def split_item(item):
     return match.group(2), match.group(1).upper(), f"{match.group(2)}{match.group(3)}"
 
 
+def normalize_key_part(value):
+    return re.sub(r"\s+", "", str(value or "")).upper()
+
+
+def price_to_cell(value):
+    if isinstance(value, (int, float)):
+        return f"{value:g}"
+    return ""
+
+
+def col_to_num(col):
+    total = 0
+    for char in col.upper():
+        total = total * 26 + ord(char) - 64
+    return total
+
+
+def num_to_col(num):
+    chars = []
+    while num:
+        num, rem = divmod(num - 1, 26)
+        chars.append(chr(65 + rem))
+    return "".join(reversed(chars))
+
+
+def next_col(col):
+    return num_to_col(col_to_num(col) + 1)
+
+
+def ordinal_day(day):
+    if 10 <= day % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    return f"{day}{suffix}"
+
+
+def feishu_date_label(date_text):
+    date_value = datetime.strptime(date_text, "%Y-%m-%d").date()
+    return f"{ordinal_day(date_value.day)} {date_value.strftime('%b')}"
+
+
+def parse_date_header(value, default_year):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+    match = re.fullmatch(r"(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,})", text, flags=re.I)
+    if match:
+        try:
+            return datetime.strptime(f"{default_year} {match.group(1)} {match.group(2)[:3]}", "%Y %d %b").date()
+        except ValueError:
+            return None
+    return None
+
+
 def load_products():
     sheet = load_workbook(INPUT, data_only=True)["Input"]
     headers = [str(value or "").strip().lower() for value in next(sheet.iter_rows(values_only=True))]
@@ -69,15 +136,213 @@ def load_products():
     return products
 
 
-def fetch_price(url, retailer):
+def fetch_price(url, retailer, attempts=3):
     if not url:
         return "/"
-    try:
-        request = Request(url, headers=HEADERS)
-        with urlopen(request, timeout=30) as response:
-            return extract_price(response.read().decode("utf-8", errors="ignore"), retailer)
-    except (HTTPError, URLError, TimeoutError):
-        return None
+    for attempt in range(1, attempts + 1):
+        try:
+            request = Request(url, headers=HEADERS)
+            with urlopen(request, timeout=30) as response:
+                price = extract_price(response.read().decode("utf-8", errors="ignore"), retailer)
+            if price is not None:
+                return price
+        except (HTTPError, URLError, TimeoutError):
+            pass
+        if attempt < attempts:
+            time.sleep(2 * attempt)
+    return None
+
+
+def feishu_required_env():
+    names = ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_SPREADSHEET_TOKEN", "FEISHU_SHEET_ID")
+    values = {name: os.getenv(name) for name in names}
+    missing = [name for name, value in values.items() if not value]
+    return values, missing
+
+
+def feishu_access_token(app_id, app_secret):
+    response = requests.post(
+        f"{FEISHU_BASE_URL}/open-apis/auth/v3/tenant_access_token/internal",
+        json={"app_id": app_id, "app_secret": app_secret},
+        timeout=60,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("code", 0) != 0:
+        raise RuntimeError(f"Feishu auth failed: {payload.get('msg') or payload}")
+    return payload["tenant_access_token"]
+
+
+def feishu_invoke_tool(access_token, spreadsheet_token, tool_name, tool_input):
+    response = requests.post(
+        f"{FEISHU_BASE_URL}/open-apis/sheet_ai/v2/spreadsheets/{spreadsheet_token}/tools/invoke_write"
+        if tool_name in {"set_range_from_csv", "modify_sheet_structure"}
+        else f"{FEISHU_BASE_URL}/open-apis/sheet_ai/v2/spreadsheets/{spreadsheet_token}/tools/invoke_read",
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        json={"tool_name": tool_name, "input": json.dumps(tool_input, ensure_ascii=False)},
+        timeout=90,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("code", 0) != 0:
+        raise RuntimeError(f"Feishu tool {tool_name} failed: {payload.get('msg') or payload}")
+    data = payload.get("data") or {}
+    output = data.get("output") or data.get("result") or data
+    if isinstance(output, str):
+        try:
+            return json.loads(output)
+        except json.JSONDecodeError:
+            return {"output": output}
+    return output
+
+
+def feishu_read_rows(access_token, spreadsheet_token, sheet_id):
+    result = feishu_invoke_tool(access_token, spreadsheet_token, "get_range_as_csv", {
+        "excel_id": spreadsheet_token,
+        "sheet_id": sheet_id,
+        "range": FEISHU_READ_RANGE,
+        "max_chars": 200000,
+        "max_rows": 1000000000,
+    })
+    if "rows" in result:
+        return result["rows"]
+    annotated_csv = result.get("annotated_csv") or result.get("output") or ""
+    rows = []
+    for index, line in enumerate(annotated_csv.splitlines(), start=1):
+        row_number = index
+        match = re.match(r"^\[row=(\d+)\]\s*(.*)$", line)
+        if match:
+            row_number = int(match.group(1))
+            line = match.group(2)
+        values = next(csv.reader([line]))
+        rows.append({"row_number": row_number, "values": {num_to_col(i + 1): value for i, value in enumerate(values)}})
+    return rows
+
+
+def feishu_write_csv(access_token, spreadsheet_token, sheet_id, start_cell, csv_text):
+    return feishu_invoke_tool(access_token, spreadsheet_token, "set_range_from_csv", {
+        "excel_id": spreadsheet_token,
+        "sheet_id": sheet_id,
+        "start_cell": start_cell,
+        "csv": csv_text,
+    })
+
+
+def feishu_insert_column(access_token, spreadsheet_token, sheet_id, column):
+    return feishu_invoke_tool(access_token, spreadsheet_token, "modify_sheet_structure", {
+        "excel_id": spreadsheet_token,
+        "sheet_id": sheet_id,
+        "operation": "insert",
+        "position": column,
+        "count": 1,
+        "side": "before",
+    })
+
+
+def header_lookup(header_row):
+    aliases = {
+        "size": {"size", "尺寸"},
+        "brand": {"brand", "品牌"},
+        "model": {"model", "型号"},
+        "channel": {"channel", "渠道"},
+        "link": {"link", "链接"},
+    }
+    by_name = {}
+    for col, value in (header_row.get("values") or {}).items():
+        normalized = str(value or "").strip().lower()
+        for key, names in aliases.items():
+            if normalized in {name.lower() for name in names}:
+                by_name[key] = col
+    required = {"size", "brand", "model", "channel"}
+    missing = sorted(required - by_name.keys())
+    if missing:
+        raise RuntimeError(f"Feishu sheet is missing required headers: {', '.join(missing)}")
+    return by_name
+
+
+def find_or_create_date_column(access_token, spreadsheet_token, sheet_id, header_row, today):
+    values = header_row.get("values") or {}
+    today_date = datetime.strptime(today, "%Y-%m-%d").date()
+    today_labels = {today, feishu_date_label(today)}
+    for col, value in values.items():
+        if str(value or "").strip() in today_labels:
+            return col
+
+    date_cols = []
+    start_num = col_to_num(DATE_HEADER_START_COL)
+    for col, value in values.items():
+        if col_to_num(col) < start_num:
+            continue
+        parsed = parse_date_header(value, today_date.year)
+        if parsed:
+            date_cols.append((parsed, col))
+
+    previous = [item for item in date_cols if item[0] < today_date]
+    if previous:
+        insert_at = next_col(max(previous, key=lambda item: item[0])[1])
+    elif date_cols:
+        insert_at = min(date_cols, key=lambda item: item[0])[1]
+    else:
+        insert_at = DATE_HEADER_START_COL
+
+    feishu_insert_column(access_token, spreadsheet_token, sheet_id, insert_at)
+    feishu_write_csv(access_token, spreadsheet_token, sheet_id, f"{insert_at}1", feishu_date_label(today))
+    return insert_at
+
+
+def update_feishu_sheet(current, today):
+    env, missing = feishu_required_env()
+    if missing:
+        print(f"skipped Feishu update; missing secrets: {', '.join(missing)}")
+        return
+
+    access_token = feishu_access_token(env["FEISHU_APP_ID"], env["FEISHU_APP_SECRET"])
+    spreadsheet_token = env["FEISHU_SPREADSHEET_TOKEN"]
+    sheet_id = env["FEISHU_SHEET_ID"]
+    rows = feishu_read_rows(access_token, spreadsheet_token, sheet_id)
+    if not rows:
+        raise RuntimeError("Feishu sheet is empty")
+
+    columns = header_lookup(rows[0])
+    date_col = find_or_create_date_column(access_token, spreadsheet_token, sheet_id, rows[0], today)
+    prices = {
+        (
+            normalize_key_part(row["size"]),
+            normalize_key_part(row["brand"]),
+            normalize_key_part(row["model"]),
+            normalize_key_part(row["channel"]),
+        ): row["price"]
+        for row in current
+        if row.get("price") not in (None, "/")
+    }
+
+    last_size = last_brand = last_model = ""
+    writes = 0
+    for row in rows[1:]:
+        values = row.get("values") or {}
+        size = values.get(columns["size"], "")
+        brand = values.get(columns["brand"], "")
+        model = values.get(columns["model"], "")
+        channel = values.get(columns["channel"], "")
+        if size:
+            last_size = size
+        if brand:
+            last_brand = brand
+        if model:
+            last_model = model
+        if not channel:
+            continue
+        key = (
+            normalize_key_part(last_size),
+            normalize_key_part(last_brand),
+            normalize_key_part(last_model),
+            normalize_key_part(channel),
+        )
+        if key not in prices:
+            continue
+        feishu_write_csv(access_token, spreadsheet_token, sheet_id, f"{date_col}{row['row_number']}", price_to_cell(prices[key]))
+        writes += 1
+    print(f"updated Feishu sheet column {date_col} with {writes} prices for {today}")
 
 
 def load_history(html, fallback_date):
@@ -121,6 +386,7 @@ def main():
     html = re.sub(r"最新数据：[0-9]{4}-[0-9]{2}-[0-9]{2}", f"最新数据：{today}", html)
     DASHBOARD.write_text(html, encoding="utf-8")
     print(f"updated {DASHBOARD} with {len(current)} records for {today}")
+    update_feishu_sheet(current, today)
 
 
 if __name__ == "__main__":
