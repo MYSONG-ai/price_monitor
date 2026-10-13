@@ -1,0 +1,44 @@
+{
+  "source_sheet_id": "1_T7opTJmIk6qCAhEZatgeMlohKcQSq3II1mL7gYnv5c",
+  "default_source_sheet_id": "1_T7opTJmIk6qCAhEZatgeMlohKcQSq3II1mL7gYnv5c",
+  "target_url": "https://mi.feishu.cn/wiki/P4kdw6mANib0a8kQTuQcESI9n1e?sheet=xDDWMM",
+  "tabs": ["Amazon", "Unieuro", "Mediaworld", "Euronics", "Expert", "Trony", "MI"],
+  "week": null,
+  "anchors": {
+    "Amazon": [
+      { "ean": "6941948703667", "week": 40, "value": 2 },
+      { "ean": "6941948703704", "week": 40, "value": 3 },
+      { "ean": "6941948707597", "week": 40, "value": 1 }
+    ],
+    "Unieuro": [
+      { "ean": "6941948702448", "week": 40, "value": 1 },
+      { "ean": "6941948702394", "week": 40, "value": 2 },
+      { "ean": "6941948702400", "week": 40, "value": 3 }
+    ],
+    "Mediaworld": [
+      { "ean": "6941948702394", "week": 40, "value": 6 },
+      { "ean": "6941948705524", "week": 40, "value": 5 },
+      { "ean": "6941948705807", "week": 40, "value": 13 }
+    ],
+    "Euronics": [
+      { "ean": "6941948702394", "week": 40, "value": 7 },
+      { "ean": "6941948703667", "week": 40, "value": 1 },
+      { "ean": "6941948705524", "week": 40, "value": 1152 }
+    ],
+    "Expert": [
+      { "ean": "6941948705524", "week": 40, "value": 9 },
+      { "ean": "6941948706224", "week": 40, "value": 1 },
+      { "ean": "6941812764350", "week": 40, "value": 1 }
+    ],
+    "Trony": [
+      { "ean": "6941948705524", "week": 40, "value": 1 },
+      { "ean": "6941948706224", "week": 40, "value": 2 },
+      { "ean": "6941812764350", "week": 40, "value": 1 }
+    ],
+    "MI": [
+      { "ean": "6941948707597", "week": 40, "value": 2 },
+      { "ean": "6941948705524", "week": 40, "value": 2 },
+      { "ean": "6941948705722", "week": 40, "value": 2 }
+    ]
+  }
+}
