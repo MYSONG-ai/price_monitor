@@ -437,11 +437,13 @@ def feishu_write_csv(access_token, spreadsheet_token, sheet_id, start_cell, csv_
 
 
 def feishu_insert_column(access_token, spreadsheet_token, sheet_id, column):
+    # Feishu structure positions are zero-based; A1 column labels are one-based.
+    position = col_to_num(column) - 1
     return feishu_invoke_tool(access_token, spreadsheet_token, "modify_sheet_structure", {
         "excel_id": spreadsheet_token,
         "sheet_id": sheet_id,
         "operation": "insert",
-        "position": column,
+        "position": position,
         "count": 1,
         "side": "before",
     })
